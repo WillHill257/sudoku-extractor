@@ -1,5 +1,5 @@
-from abc import abstractmethod
 from copy import deepcopy
+from typing import List
 from skimage.io import imread, imsave, imshow, show
 from skimage.color import rgb2gray
 from skimage import img_as_float, img_as_ubyte, exposure
@@ -13,6 +13,7 @@ from skimage import morphology, measure
 from scipy.ndimage import gaussian_filter, convolve, gaussian_laplace
 from skimage.transform import resize
 from skimage.draw import polygon_perimeter
+from os import mkdir
 
 
 """
@@ -31,9 +32,25 @@ def showImage(image):
     show()
 
 
+def sharpnessScore(image):
+    gy, gx = np.gradient(image)
+    gnorm = np.sqrt(gx**2 + gy**2)
+    return np.average(gnorm)
+
+
 def findContours(image):
     contours = measure.find_contours(image, 0.8)
     return contours
+
+
+def plotContours(image, contours):
+    fig, ax = plt.subplots()
+    ax.imshow(image, cmap=plt.cm.gray)
+
+    for contour in contours:
+        ax.plot(contour[:, 1], contour[:, 0], linewidth=2)
+
+    plt.show()
 
 
 def findBoundingBox(contours):
@@ -50,19 +67,21 @@ def findBoundingBox(contours):
     return bounding_boxes
 
 
-def plotBoundingBoxes(boundingBoxes, imageShape, overlay=None):
-    with_boxes = np.zeros(imageShape)
-
-    for box in boundingBoxes:
+def plotBoundingBoxes(boundingBoxes, imageShape, overlay=None, num_exists=None):
+    with_boxes = np.zeros((imageShape[0], imageShape[1], 3))
+    for i, box in enumerate(boundingBoxes):
         # [Xmin, Xmax, Ymin, Ymax]
         r = [box[0], box[1], box[1], box[0], box[0]]
         c = [box[3], box[3], box[2], box[2], box[3]]
-        rr, cc = polygon_perimeter(r, c, with_boxes.shape)
-        with_boxes[rr, cc] = 1  # set color white
+        if(num_exists == None or not num_exists[i]):
+            plt.plot(c, r, color="r")
+        else:
+            plt.plot(c, r, color="g")
+        # with_boxes[rr, cc] = np.array([255, 0, 0])  # set color white
 
-    plt.imshow(with_boxes, cmap="gray")
     if np.any(overlay) != None:
         plt.imshow(overlay, cmap="gray")
+    # plt.imshow(with_boxes)
     plt.show()
 
 
@@ -112,18 +131,27 @@ def findGridLines(image):
     return sudoku_h + sudoku_v
 
 
-if __name__ == "__main__":
-    # read in an image filename
-    # filename = input("Please enter the absolute path of the image to process: ").strip()
-    # filename = "./v2_test/image50.jpg"
-    filename = "./v2_test/image73.jpg"
+# determines whether a cell contains a number
+# threshold is the minumum percentage to pass as a number
+def isDigitPresent(cropped_cell, threshold):
 
+    num_ones = np.sum(cropped_cell == 1)
+    p = np.sqrt(num_ones / len(cropped_cell.flatten()))
+
+    return p >= threshold
+
+
+def extract_sudoku(filename):
+
+    sudoku = None
     # read in the image
-    sudoku = imread(filename)
+    try:
+        sudoku = imread(filename)
+    except:
+        return
 
     # convert the image to greyscale
     sudoku = img_as_ubyte(rgb2gray(sudoku))
-
     # apply highboost filtering
     sudoku = gaussian_filter(sudoku, 1)
     blurredImage = gaussian_filter(sudoku, 1.5)
@@ -156,26 +184,29 @@ if __name__ == "__main__":
         max_bb = findMaxBB(bounding_boxes)
 
         # use the max bounding box to extract the sudoku grid itself (for the binary image) - for further cropping
-        sudoku = sudoku[max_bb[0] : max_bb[1], max_bb[2] : max_bb[3]]
+        sudoku = sudoku[max_bb[0]: max_bb[1], max_bb[2]: max_bb[3]]
 
         # crop for the original image as well
-        sudoku_cropped = sudoku_cropped[max_bb[0] : max_bb[1], max_bb[2] : max_bb[3]]
+        sudoku_cropped = sudoku_cropped[max_bb[0]
+            : max_bb[1], max_bb[2]: max_bb[3]]
 
     # rescale the image
     sudoku_cropped = resize(sudoku_cropped, (450, 450))
-
+    sharpness = sharpnessScore(sudoku_cropped)
+    # print(sharpness)
     # fix up the intensity ditribution - makes thresholding easier
     sudoku_cropped = exposure.equalize_adapthist(sudoku_cropped)
 
     # sharpen an already sharp image - enhance edges, makes easier to detect boxes and numbers without the noise (outside the main grid)
     sudoku_cropped = gaussian_laplace(sudoku_cropped, sigma=2)
-
+    showImage(sudoku_cropped)
     # apply a global threshold to the image
     threshold_value = threshold_li(sudoku_cropped)
     sudoku_cropped = sudoku_cropped >= threshold_value
-
+    showImage(sudoku_cropped)
     # extract the gridlines again
-    sudoku_cropped = morphology.binary_dilation(sudoku_cropped, morphology.disk(2))
+    sudoku_cropped = morphology.binary_dilation(
+        sudoku_cropped, morphology.disk(2))
     sudoku_cropped_box = findGridLines(sudoku_cropped)
 
     # close up any holes in the gridlines
@@ -189,7 +220,8 @@ if __name__ == "__main__":
     # determine the bounding boxes
     contours = findContours(sudoku_cropped_box)
     bounding_boxes = findBoundingBox(contours)
-
+    plotBoundingBoxes(bounding_boxes,
+                      sudoku_cropped_box.shape, sudoku_cropped_box)
     # find the 81 boxes to crop out
     """
     1) filter by the absolute value of the difference between the horizontal and vertical edges (can average these for each box) - set tolerance
@@ -207,7 +239,7 @@ if __name__ == "__main__":
     # if it fails, yolo
     if len(passed_boxes) < 81:
         print("Please take a more clear image, without any shading in the image")
-        exit()
+        return
 
     # sort by the area of the box
     passed_boxes = sorted(
@@ -228,7 +260,8 @@ if __name__ == "__main__":
     # sort the boxes by the difference of their area to the median area
     passed_boxes = sorted(
         passed_boxes,
-        key=lambda box: np.abs((box[1] - box[0]) * (box[3] - box[2]) - medianArea),
+        key=lambda box: np.abs(
+            (box[1] - box[0]) * (box[3] - box[2]) - medianArea),
     )
 
     # take the 81 smallest
@@ -240,4 +273,44 @@ if __name__ == "__main__":
     3) crop out from pre-thresholded image and save the boxes with images for recognition (save with reference to its linear index)
     """
 
-    plotBoundingBoxes(sudoku_grid_boxes, sudoku_cropped_box.shape, sudoku_cropped)
+    # sort by y first
+    sudoku_grid_boxes = sorted(sudoku_grid_boxes, key=lambda box: box[0])
+    # sort by x
+    for i in range(9):
+        sudoku_grid_boxes[9 * i:(i+1)*9] = sorted(
+            sudoku_grid_boxes[9 * i:(i+1)*9], key=lambda box: box[2])
+
+    # erode image to get rid of more noise
+    # pick an SE based on the sharpness score
+    SE = None
+    if(sharpness >= 0.03):
+        SE = morphology.rectangle(5, 5)
+    else:
+        SE = morphology.rectangle(6, 6)
+    sudoku_cropped_eroded = morphology.binary_erosion(sudoku_cropped, SE)
+    # sudoku_cropped_eroded = morphology.binary_opening(sudoku_cropped, SE)
+    # an array that stores whether a position contains a number
+    num_exists = [False] * 81
+    for i, bb in enumerate(sudoku_grid_boxes):
+        border_padding = 5
+        cropped_cell = sudoku_cropped_eroded[bb[0]+border_padding:bb[1] -
+                                             border_padding, bb[2]+border_padding:bb[3]-border_padding]
+        # cropped_cell = morphology.binary_opening(cropped_cell, SE)
+        # if(i == 63):
+        #     print(np.sqrt(np.sum(
+        #         cropped_cell == 1) / len(cropped_cell.flatten())))
+        #     showImage(cropped_cell)
+        num_exists[i] = isDigitPresent(
+            cropped_cell, 0.22)
+
+    plotBoundingBoxes(sudoku_grid_boxes,
+                      sudoku_cropped_eroded.shape, sudoku_cropped_eroded, num_exists)
+
+
+if __name__ == "__main__":
+    # read in an image filename
+    # filename = input("Please enter the absolute path of the image to process: ").strip()
+    for num in range(91, 92):
+        filename = "./v2_test/image" + str(num)+".jpg"
+        print("Current file: " + filename)
+        extract_sudoku(filename)
