@@ -1,5 +1,7 @@
 from copy import deepcopy
+from posixpath import dirname
 from typing import List
+from unicodedata import numeric
 from skimage.io import imread, imsave, imshow, show
 from skimage.color import rgb2gray
 from skimage import img_as_float, img_as_ubyte, exposure
@@ -187,8 +189,7 @@ def extract_sudoku(filename):
         sudoku = sudoku[max_bb[0]: max_bb[1], max_bb[2]: max_bb[3]]
 
         # crop for the original image as well
-        sudoku_cropped = sudoku_cropped[max_bb[0]
-            : max_bb[1], max_bb[2]: max_bb[3]]
+        sudoku_cropped = sudoku_cropped[max_bb[0]: max_bb[1], max_bb[2]: max_bb[3]]
 
     # rescale the image
     sudoku_cropped = resize(sudoku_cropped, (450, 450))
@@ -196,14 +197,14 @@ def extract_sudoku(filename):
     # print(sharpness)
     # fix up the intensity ditribution - makes thresholding easier
     sudoku_cropped = exposure.equalize_adapthist(sudoku_cropped)
+    # this is used to crop out the numbers
+    sudoku_cropped_copy = deepcopy(sudoku_cropped)
 
     # sharpen an already sharp image - enhance edges, makes easier to detect boxes and numbers without the noise (outside the main grid)
     sudoku_cropped = gaussian_laplace(sudoku_cropped, sigma=2)
-    showImage(sudoku_cropped)
     # apply a global threshold to the image
     threshold_value = threshold_li(sudoku_cropped)
     sudoku_cropped = sudoku_cropped >= threshold_value
-    showImage(sudoku_cropped)
     # extract the gridlines again
     sudoku_cropped = morphology.binary_dilation(
         sudoku_cropped, morphology.disk(2))
@@ -220,8 +221,8 @@ def extract_sudoku(filename):
     # determine the bounding boxes
     contours = findContours(sudoku_cropped_box)
     bounding_boxes = findBoundingBox(contours)
-    plotBoundingBoxes(bounding_boxes,
-                      sudoku_cropped_box.shape, sudoku_cropped_box)
+    # plotBoundingBoxes(bounding_boxes,
+    #                   sudoku_cropped_box.shape, sudoku_cropped_box)
     # find the 81 boxes to crop out
     """
     1) filter by the absolute value of the difference between the horizontal and vertical edges (can average these for each box) - set tolerance
@@ -303,14 +304,28 @@ def extract_sudoku(filename):
         num_exists[i] = isDigitPresent(
             cropped_cell, 0.22)
 
-    plotBoundingBoxes(sudoku_grid_boxes,
-                      sudoku_cropped_eroded.shape, sudoku_cropped_eroded, num_exists)
+    # create directory to save the cropped out number images
+    dirname = filename[:filename.rfind(".")]+"_output/"
+    try:
+        mkdir(dirname)
+    except:
+        pass
+    # the actual cropping out of the numbers
+    for i in range(81):
+        if num_exists[i]:
+            bb = sudoku_grid_boxes[i]
+            cropped_number = sudoku_cropped_copy[bb[0]:bb[1], bb[2]:bb[3]]
+            plt.imsave(dirname + str(i) + ".png",
+                       cropped_number, format="png", cmap="gray")
+
+    # plotBoundingBoxes(sudoku_grid_boxes,
+    #                   sudoku_cropped_eroded.shape, sudoku_cropped_eroded, num_exists)
 
 
 if __name__ == "__main__":
     # read in an image filename
     # filename = input("Please enter the absolute path of the image to process: ").strip()
-    for num in range(91, 92):
+    for num in range(18, 1089):
         filename = "./v2_test/image" + str(num)+".jpg"
         print("Current file: " + filename)
         extract_sudoku(filename)
