@@ -353,7 +353,7 @@ def extract_sudoku(filename):
     # )
 
     # return the cropped out cells with a digit in them
-    return cropped_cells
+    return cropped_cells, num_exists
 
 
 # format the cells as if they were MNIST digits
@@ -380,7 +380,7 @@ def convert_to_dataloader(imageList):
     # print(dataset[0])
 
     # create the dataloader, with no shuffling since order matters
-    dataloader = torch.utils.data.DataLoader(imageList, shuffle=False, batch_size=len(imageList))
+    dataloader = torch.utils.data.DataLoader(imageList, shuffle=False, batch_size=1)
 
     return dataloader
 
@@ -394,23 +394,24 @@ def predict_digits(dataloader):
     model1 = ModelM3().to(device)
 
     # load the trained model parameters
-    # model1.load_state_dict(
-    #     torch.load(
-    #         "MnistSimpleCNN-master/logs/modelM3/model000.pth",
-    #         map_location=torch.device("cpu"),
-    #     )
-    # )
-
     model1.load_state_dict(
         torch.load(
-            "saved_model.pb",
+            "MnistSimpleCNN-master/logs/modelM3/model000.pth",
             map_location=torch.device("cpu"),
         )
     )
+
+    # model1.load_state_dict(
+    #     torch.load(
+    #         "saved_model.pb",
+    #         map_location=torch.device("cpu"),
+    #     )
+    # )
     # do the prediction
     model1.eval()
 
     # no need to do gradient computations
+    predictions = []
     with torch.no_grad():
         # loop through the dataloader
         for batch_idx, data in enumerate(dataloader):
@@ -418,23 +419,47 @@ def predict_digits(dataloader):
 
             # run the input through the model
             output = model1(data)
-
             # determine the model's prediction
-            pred = output.argmax(dim=1, keepdim=True)
-
-            print(pred)
+            # pred = output.argmax(dim=1, keepdim=True)
+            pred = torch.topk(output,2, dim=1 ).indices
+            
+            predictions.append(pred.detach().cpu().numpy().flatten())
+            # predictions.append(pred)
             # return
+    return predictions
 
+def printSudoku(digits, num_exists):
+  digit_idx = 0
+  for i in range(9):
+    for j in range(9):
+      
+      lin_idx = j + i * 9
+      
+      if num_exists[lin_idx]:
+        
+        if digits[digit_idx][0] == 0:
+          print(digits[digit_idx][1], end=" ")    
+        else:
+          print(digits[digit_idx][0], end=" ")    
+          
+        digit_idx+=1    
+      else:
+        print("_", end=" ")
+    print()
+      
+
+  
+      
 
 if __name__ == "__main__":
     # read in an image filename
     # filename = input("Please enter the absolute path of the image to process: ").strip()
-    for num in range(205, 206):
+    for num in range(1080, 1089):
         filename = "./v2_test/image" + str(num) + ".jpg"
         print("Current file: " + filename)
 
         # get the cropped cells with digits in them
-        cropped_cells = extract_sudoku(filename)
+        cropped_cells, num_exists = extract_sudoku(filename)
 
         # need to format the cells into the correct shapes
         cropped_cells = format_cells(cropped_cells)
@@ -450,6 +475,8 @@ if __name__ == "__main__":
         dataloader = convert_to_dataloader(images)
 
         # use the trained MNIST model to predict the digits
-        predict_digits(dataloader)
+        results = predict_digits(dataloader)
+        printSudoku(results, num_exists)
+        
 
         exit()
