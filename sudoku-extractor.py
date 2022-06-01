@@ -25,6 +25,7 @@ from models.modelM3 import ModelM3
 from datasets import MnistDataset
 from torchvision import transforms
 
+from PIL import Image
 
 """
 1) Convert image to greyscale
@@ -362,9 +363,11 @@ def format_cells(cropped_cells):
     for i, cell in cropped_cells:
         # resize
         cell_resized = resize(cell, (28, 28))
+        threshold_value = threshold_li(cell_resized)
+        cell_resized = cell_resized >= threshold_value
 
         # add to the output
-        output.append((i, cell_resized))
+        output.append((i,  cell_resized))
 
     return output
 
@@ -372,11 +375,12 @@ def format_cells(cropped_cells):
 def convert_to_dataloader(imageList):
     # create a dataset
     # dataset = TensorDataset(torch.from_numpy(np.array(imageList)))
-    dataset = transforms.ToTensor()(np.array(imageList).astype(np.float32))
-    print(dataset[0])
+
+    # dataset = transforms.ToTensor()(np.reshape(imageList, (-1, 28, 28, 1)).astype(np.float32))
+    # print(dataset[0])
 
     # create the dataloader, with no shuffling since order matters
-    dataloader = DataLoader(dataset, shuffle=False, batch_size=1)
+    dataloader = torch.utils.data.DataLoader(imageList, shuffle=False, batch_size=len(imageList))
 
     return dataloader
 
@@ -390,13 +394,19 @@ def predict_digits(dataloader):
     model1 = ModelM3().to(device)
 
     # load the trained model parameters
+    # model1.load_state_dict(
+    #     torch.load(
+    #         "MnistSimpleCNN-master/logs/modelM3/model000.pth",
+    #         map_location=torch.device("cpu"),
+    #     )
+    # )
+
     model1.load_state_dict(
         torch.load(
-            "MnistSimpleCNN-master/logs/modelM3/model000.pth",
+            "saved_model.pb",
             map_location=torch.device("cpu"),
         )
     )
-
     # do the prediction
     model1.eval()
 
@@ -408,7 +418,6 @@ def predict_digits(dataloader):
 
             # run the input through the model
             output = model1(data)
-            print(output)
 
             # determine the model's prediction
             pred = output.argmax(dim=1, keepdim=True)
@@ -420,7 +429,7 @@ def predict_digits(dataloader):
 if __name__ == "__main__":
     # read in an image filename
     # filename = input("Please enter the absolute path of the image to process: ").strip()
-    for num in range(18, 1089):
+    for num in range(205, 206):
         filename = "./v2_test/image" + str(num) + ".jpg"
         print("Current file: " + filename)
 
@@ -434,10 +443,8 @@ if __name__ == "__main__":
         test_loader = torch.utils.data.DataLoader(
             test_dataset, batch_size=100, shuffle=False
         )
-        print(test_dataset[0])
-
         # get the images
-        images = [np.array(pair[1]) for pair in cropped_cells]
+        images = [transforms.ToTensor()((1 - np.array(pair[1])).astype(np.float32)) for pair in cropped_cells]
 
         # create a dataloader
         dataloader = convert_to_dataloader(images)
