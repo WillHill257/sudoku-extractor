@@ -1,9 +1,12 @@
+import sys
+
+# add the model to the sys path
+sys.path.insert(1, "./MnistSimpleCNN-master/code/")
+
 from copy import deepcopy
-from posixpath import dirname
-from typing import List
-from unicodedata import numeric
-from skimage.io import imread, imsave, imshow, show
-from skimage.color import rgb2gray
+from dataclasses import dataclass
+from skimage.io import imread, imshow, show
+from skimage.color import rgb2gray, gray2rgb
 from skimage import img_as_float, img_as_ubyte, exposure
 from skimage.filters import (
     threshold_local,
@@ -12,10 +15,15 @@ from skimage.filters import (
 import matplotlib.pyplot as plt
 import numpy as np
 from skimage import morphology, measure
-from scipy.ndimage import gaussian_filter, convolve, gaussian_laplace
+from scipy.ndimage import gaussian_filter, gaussian_laplace
 from skimage.transform import resize
-from skimage.draw import polygon_perimeter
 from os import mkdir
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
+from models.modelM3 import ModelM3
+from datasets import MnistDataset
+from torchvision import transforms
 
 
 """
@@ -28,23 +36,31 @@ from os import mkdir
 
 L = 256
 
-
+# function to display an image
 def showImage(image):
     imshow(image, cmap="gray")
     show()
 
 
+# calculate a representation of the sharpness of an image
 def sharpnessScore(image):
+    # get the gradients of the image in both directions
     gy, gx = np.gradient(image)
-    gnorm = np.sqrt(gx**2 + gy**2)
+
+    # take the magnitude of the gradients
+    gnorm = np.sqrt(gx ** 2 + gy ** 2)
+
+    # the average magintude is our score
     return np.average(gnorm)
 
 
+# find the contours (connected segments) in the image
 def findContours(image):
     contours = measure.find_contours(image, 0.8)
     return contours
 
 
+# plot the contours on top of an image (that they came from)
 def plotContours(image, contours):
     fig, ax = plt.subplots()
     ax.imshow(image, cmap=plt.cm.gray)
@@ -55,6 +71,7 @@ def plotContours(image, contours):
     plt.show()
 
 
+# convert the contours to a bounding box representation
 def findBoundingBox(contours):
     bounding_boxes = []
 
@@ -69,24 +86,23 @@ def findBoundingBox(contours):
     return bounding_boxes
 
 
+# plot the bounding boxes over the image they came from and optionally include red/green box for whether a digit is present
 def plotBoundingBoxes(boundingBoxes, imageShape, overlay=None, num_exists=None):
-    with_boxes = np.zeros((imageShape[0], imageShape[1], 3))
     for i, box in enumerate(boundingBoxes):
         # [Xmin, Xmax, Ymin, Ymax]
         r = [box[0], box[1], box[1], box[0], box[0]]
         c = [box[3], box[3], box[2], box[2], box[3]]
-        if(num_exists == None or not num_exists[i]):
+        if num_exists == None or not num_exists[i]:
             plt.plot(c, r, color="r")
         else:
             plt.plot(c, r, color="g")
-        # with_boxes[rr, cc] = np.array([255, 0, 0])  # set color white
 
     if np.any(overlay) != None:
         plt.imshow(overlay, cmap="gray")
-    # plt.imshow(with_boxes)
     plt.show()
 
 
+# determine the largest box (by area)
 def findMaxBB(bounding_boxes):
     max = -1
     maxIndex = -1
@@ -99,6 +115,7 @@ def findMaxBB(bounding_boxes):
     return bounding_boxes[maxIndex]
 
 
+# determine which bounding boxes are squares (vertical and horizontal lines should be in large eneough proportion to each other)
 def passSquares(boundingBoxes, toleranceRatio):
     # store the passed boxes
     passedBoxes = []
@@ -121,6 +138,7 @@ def passSquares(boundingBoxes, toleranceRatio):
     return passedBoxes
 
 
+# find the horizontal and vertical lines of the sudoku grid
 def findGridLines(image):
     # extract vertical and horizontal edges, respectively
     vert_SE = morphology.rectangle(41, 1)
@@ -143,6 +161,7 @@ def isDigitPresent(cropped_cell, threshold):
     return p >= threshold
 
 
+# function to extract the sudoku grid
 def extract_sudoku(filename):
 
     sudoku = None
@@ -154,6 +173,7 @@ def extract_sudoku(filename):
 
     # convert the image to greyscale
     sudoku = img_as_ubyte(rgb2gray(sudoku))
+
     # apply highboost filtering
     sudoku = gaussian_filter(sudoku, 1)
     blurredImage = gaussian_filter(sudoku, 1.5)
@@ -186,15 +206,15 @@ def extract_sudoku(filename):
         max_bb = findMaxBB(bounding_boxes)
 
         # use the max bounding box to extract the sudoku grid itself (for the binary image) - for further cropping
-        sudoku = sudoku[max_bb[0]: max_bb[1], max_bb[2]: max_bb[3]]
+        sudoku = sudoku[max_bb[0] : max_bb[1], max_bb[2] : max_bb[3]]
 
         # crop for the original image as well
-        sudoku_cropped = sudoku_cropped[max_bb[0]: max_bb[1], max_bb[2]: max_bb[3]]
+        sudoku_cropped = sudoku_cropped[max_bb[0] : max_bb[1], max_bb[2] : max_bb[3]]
 
     # rescale the image
     sudoku_cropped = resize(sudoku_cropped, (450, 450))
     sharpness = sharpnessScore(sudoku_cropped)
-    # print(sharpness)
+
     # fix up the intensity ditribution - makes thresholding easier
     sudoku_cropped = exposure.equalize_adapthist(sudoku_cropped)
     # this is used to crop out the numbers
@@ -206,8 +226,7 @@ def extract_sudoku(filename):
     threshold_value = threshold_li(sudoku_cropped)
     sudoku_cropped = sudoku_cropped >= threshold_value
     # extract the gridlines again
-    sudoku_cropped = morphology.binary_dilation(
-        sudoku_cropped, morphology.disk(2))
+    sudoku_cropped = morphology.binary_dilation(sudoku_cropped, morphology.disk(2))
     sudoku_cropped_box = findGridLines(sudoku_cropped)
 
     # close up any holes in the gridlines
@@ -221,8 +240,7 @@ def extract_sudoku(filename):
     # determine the bounding boxes
     contours = findContours(sudoku_cropped_box)
     bounding_boxes = findBoundingBox(contours)
-    # plotBoundingBoxes(bounding_boxes,
-    #                   sudoku_cropped_box.shape, sudoku_cropped_box)
+
     # find the 81 boxes to crop out
     """
     1) filter by the absolute value of the difference between the horizontal and vertical edges (can average these for each box) - set tolerance
@@ -261,8 +279,7 @@ def extract_sudoku(filename):
     # sort the boxes by the difference of their area to the median area
     passed_boxes = sorted(
         passed_boxes,
-        key=lambda box: np.abs(
-            (box[1] - box[0]) * (box[3] - box[2]) - medianArea),
+        key=lambda box: np.abs((box[1] - box[0]) * (box[3] - box[2]) - medianArea),
     )
 
     # take the 81 smallest
@@ -278,13 +295,14 @@ def extract_sudoku(filename):
     sudoku_grid_boxes = sorted(sudoku_grid_boxes, key=lambda box: box[0])
     # sort by x
     for i in range(9):
-        sudoku_grid_boxes[9 * i:(i+1)*9] = sorted(
-            sudoku_grid_boxes[9 * i:(i+1)*9], key=lambda box: box[2])
+        sudoku_grid_boxes[9 * i : (i + 1) * 9] = sorted(
+            sudoku_grid_boxes[9 * i : (i + 1) * 9], key=lambda box: box[2]
+        )
 
     # erode image to get rid of more noise
     # pick an SE based on the sharpness score
     SE = None
-    if(sharpness >= 0.03):
+    if sharpness >= 0.03:
         SE = morphology.rectangle(5, 5)
     else:
         SE = morphology.rectangle(6, 6)
@@ -294,38 +312,137 @@ def extract_sudoku(filename):
     num_exists = [False] * 81
     for i, bb in enumerate(sudoku_grid_boxes):
         border_padding = 5
-        cropped_cell = sudoku_cropped_eroded[bb[0]+border_padding:bb[1] -
-                                             border_padding, bb[2]+border_padding:bb[3]-border_padding]
+        cropped_cell = sudoku_cropped_eroded[
+            bb[0] + border_padding : bb[1] - border_padding,
+            bb[2] + border_padding : bb[3] - border_padding,
+        ]
         # cropped_cell = morphology.binary_opening(cropped_cell, SE)
         # if(i == 63):
         #     print(np.sqrt(np.sum(
         #         cropped_cell == 1) / len(cropped_cell.flatten())))
         #     showImage(cropped_cell)
-        num_exists[i] = isDigitPresent(
-            cropped_cell, 0.22)
+        num_exists[i] = isDigitPresent(cropped_cell, 0.22)
 
     # create directory to save the cropped out number images
-    dirname = filename[:filename.rfind(".")]+"_output/"
+    dirname = filename[: filename.rfind(".")] + "_output/"
     try:
         mkdir(dirname)
     except:
         pass
+
+    # store the cropped out images
+    cropped_cells = []
     # the actual cropping out of the numbers
     for i in range(81):
         if num_exists[i]:
             bb = sudoku_grid_boxes[i]
-            cropped_number = sudoku_cropped_copy[bb[0]:bb[1], bb[2]:bb[3]]
-            plt.imsave(dirname + str(i) + ".png",
-                       cropped_number, format="png", cmap="gray")
+            cropped_number = img_as_float(
+                sudoku_cropped_copy[bb[0] : bb[1], bb[2] : bb[3]]
+            )
+            cropped_cells.append((i, cropped_number))
+            plt.imsave(
+                dirname + str(i) + ".png", cropped_number, format="png", cmap="gray"
+            )
 
-    # plotBoundingBoxes(sudoku_grid_boxes,
-    #                   sudoku_cropped_eroded.shape, sudoku_cropped_eroded, num_exists)
+    # plotBoundingBoxes(
+    #     sudoku_grid_boxes,
+    #     sudoku_cropped_eroded.shape,
+    #     sudoku_cropped_eroded,
+    #     num_exists,
+    # )
+
+    # return the cropped out cells with a digit in them
+    return cropped_cells
+
+
+# format the cells as if they were MNIST digits
+def format_cells(cropped_cells):
+    output = []
+    # loop through each cell
+    for i, cell in cropped_cells:
+        # resize
+        cell_resized = resize(cell, (28, 28))
+
+        # add to the output
+        output.append((i, cell_resized))
+
+    return output
+
+
+def convert_to_dataloader(imageList):
+    # create a dataset
+    # dataset = TensorDataset(torch.from_numpy(np.array(imageList)))
+    dataset = transforms.ToTensor()(np.array(imageList).astype(np.float32))
+    print(dataset[0])
+
+    # create the dataloader, with no shuffling since order matters
+    dataloader = DataLoader(dataset, shuffle=False, batch_size=1)
+
+    return dataloader
+
+
+# predict the digits from images
+def predict_digits(dataloader):
+    use_cuda = torch.cuda.is_available()
+    device = torch.device("cuda" if use_cuda else "cpu")
+
+    # choose the model to use
+    model1 = ModelM3().to(device)
+
+    # load the trained model parameters
+    model1.load_state_dict(
+        torch.load(
+            "MnistSimpleCNN-master/logs/modelM3/model000.pth",
+            map_location=torch.device("cpu"),
+        )
+    )
+
+    # do the prediction
+    model1.eval()
+
+    # no need to do gradient computations
+    with torch.no_grad():
+        # loop through the dataloader
+        for batch_idx, data in enumerate(dataloader):
+            data = data.to(device)
+
+            # run the input through the model
+            output = model1(data)
+            print(output)
+
+            # determine the model's prediction
+            pred = output.argmax(dim=1, keepdim=True)
+
+            print(pred)
+            # return
 
 
 if __name__ == "__main__":
     # read in an image filename
     # filename = input("Please enter the absolute path of the image to process: ").strip()
     for num in range(18, 1089):
-        filename = "./v2_test/image" + str(num)+".jpg"
+        filename = "./v2_test/image" + str(num) + ".jpg"
         print("Current file: " + filename)
-        extract_sudoku(filename)
+
+        # get the cropped cells with digits in them
+        cropped_cells = extract_sudoku(filename)
+
+        # need to format the cells into the correct shapes
+        cropped_cells = format_cells(cropped_cells)
+
+        test_dataset = MnistDataset(training=False, transform=None)
+        test_loader = torch.utils.data.DataLoader(
+            test_dataset, batch_size=100, shuffle=False
+        )
+        print(test_dataset[0])
+
+        # get the images
+        images = [np.array(pair[1]) for pair in cropped_cells]
+
+        # create a dataloader
+        dataloader = convert_to_dataloader(images)
+
+        # use the trained MNIST model to predict the digits
+        predict_digits(dataloader)
+
+        exit()
