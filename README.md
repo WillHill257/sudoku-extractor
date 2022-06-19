@@ -2,6 +2,12 @@
 
 #### William Hill (2115261) and Ireton Liu (2089889)
 
+## Structure
+
+- `sudoku-extractor.py` is the script
+- `v2_test/` contains sample images
+- `MnistSimpeCNN-master` contains the model used to do digit recognition on the extracted images (from <a href="https://github.com/ansh941/MnistSimpleCNN">ansh941</a> on GitHub)
+
 ## How to run
 
 Perform the following steps:
