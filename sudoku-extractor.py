@@ -1,12 +1,11 @@
 import sys
 
-# add the model to the sys path
+# add the model to the sys path so we can access it
 sys.path.insert(1, "./MnistSimpleCNN-master/code/")
 
 from copy import deepcopy
-from dataclasses import dataclass
 from skimage.io import imread, imshow, show
-from skimage.color import rgb2gray, gray2rgb
+from skimage.color import rgb2gray
 from skimage import img_as_float, img_as_ubyte, exposure
 from skimage.filters import (
     threshold_local,
@@ -19,22 +18,11 @@ from scipy.ndimage import gaussian_filter, gaussian_laplace
 from skimage.transform import resize
 from os import mkdir
 import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset
 from models.modelM3 import ModelM3
 from datasets import MnistDataset
 from torchvision import transforms
 
-from PIL import Image
-
-"""
-1) Convert image to greyscale
-2) Convert image to binary image
-3) Box detection - find vertical and horizontal lines, then find contours
-4) Extract the main sudoku grid
-5) Box detection again
-"""
-
+# number of intensity levels in the image
 L = 256
 
 # function to display an image
@@ -55,7 +43,7 @@ def sharpnessScore(image):
     return np.average(gnorm)
 
 
-# find the contours (connected segments) in the image
+# find the contours (connected segments, with labels) in the image
 def findContours(image):
     contours = measure.find_contours(image, 0.8)
     return contours
@@ -90,7 +78,6 @@ def findBoundingBox(contours):
 # plot the bounding boxes over the image they came from and optionally include red/green box for whether a digit is present
 def plotBoundingBoxes(boundingBoxes, imageShape, overlay=None, num_exists=None):
     for i, box in enumerate(boundingBoxes):
-        # [Xmin, Xmax, Ymin, Ymax]
         r = [box[0], box[1], box[1], box[0], box[0]]
         c = [box[3], box[3], box[2], box[2], box[3]]
         if num_exists == None or not num_exists[i]:
@@ -166,16 +153,18 @@ def isDigitPresent(cropped_cell, threshold):
 def extract_sudoku(filename):
 
     sudoku = None
-    # read in the image
+
+    # read in the image, if it exists
     try:
         sudoku = imread(filename)
     except:
-        return
+        print("Please choose a valid image")
+        exit()
 
     # convert the image to greyscale
     sudoku = img_as_ubyte(rgb2gray(sudoku))
 
-    # apply highboost filtering
+    # apply unmask filtering
     sudoku = gaussian_filter(sudoku, 1)
     blurredImage = gaussian_filter(sudoku, 1.5)
     mask = sudoku - blurredImage
@@ -212,20 +201,23 @@ def extract_sudoku(filename):
         # crop for the original image as well
         sudoku_cropped = sudoku_cropped[max_bb[0] : max_bb[1], max_bb[2] : max_bb[3]]
 
-    # rescale the image
+    # rescale the image so our later filters work with a single size (no further tuning required)
     sudoku_cropped = resize(sudoku_cropped, (450, 450))
     sharpness = sharpnessScore(sudoku_cropped)
 
     # fix up the intensity ditribution - makes thresholding easier
     sudoku_cropped = exposure.equalize_adapthist(sudoku_cropped)
+
     # this is used to crop out the numbers
     sudoku_cropped_copy = deepcopy(sudoku_cropped)
 
     # sharpen an already sharp image - enhance edges, makes easier to detect boxes and numbers without the noise (outside the main grid)
     sudoku_cropped = gaussian_laplace(sudoku_cropped, sigma=2)
+
     # apply a global threshold to the image
     threshold_value = threshold_li(sudoku_cropped)
     sudoku_cropped = sudoku_cropped >= threshold_value
+
     # extract the gridlines again
     sudoku_cropped = morphology.binary_dilation(sudoku_cropped, morphology.disk(2))
     sudoku_cropped_box = findGridLines(sudoku_cropped)
@@ -259,7 +251,7 @@ def extract_sudoku(filename):
     # if it fails, yolo
     if len(passed_boxes) < 81:
         print("Please take a more clear image, without any shading in the image")
-        return
+        exit()
 
     # sort by the area of the box
     passed_boxes = sorted(
@@ -294,6 +286,7 @@ def extract_sudoku(filename):
 
     # sort by y first
     sudoku_grid_boxes = sorted(sudoku_grid_boxes, key=lambda box: box[0])
+
     # sort by x
     for i in range(9):
         sudoku_grid_boxes[9 * i : (i + 1) * 9] = sorted(
@@ -307,21 +300,21 @@ def extract_sudoku(filename):
         SE = morphology.rectangle(5, 5)
     else:
         SE = morphology.rectangle(6, 6)
+
     sudoku_cropped_eroded = morphology.binary_erosion(sudoku_cropped, SE)
-    # sudoku_cropped_eroded = morphology.binary_opening(sudoku_cropped, SE)
+
     # an array that stores whether a position contains a number
     num_exists = [False] * 81
     for i, bb in enumerate(sudoku_grid_boxes):
+
+        # crop out each box (with interior padding so don't get any of the borders)
         border_padding = 5
         cropped_cell = sudoku_cropped_eroded[
             bb[0] + border_padding : bb[1] - border_padding,
             bb[2] + border_padding : bb[3] - border_padding,
         ]
-        # cropped_cell = morphology.binary_opening(cropped_cell, SE)
-        # if(i == 63):
-        #     print(np.sqrt(np.sum(
-        #         cropped_cell == 1) / len(cropped_cell.flatten())))
-        #     showImage(cropped_cell)
+
+        # the array that stores whether a digit is present at that location
         num_exists[i] = isDigitPresent(cropped_cell, 0.22)
 
     # create directory to save the cropped out number images
@@ -335,6 +328,7 @@ def extract_sudoku(filename):
     cropped_cells = []
     # the actual cropping out of the numbers
     for i in range(81):
+        # only save the images that have a digit in them
         if num_exists[i]:
             bb = sudoku_grid_boxes[i]
             cropped_number = img_as_float(
@@ -344,6 +338,8 @@ def extract_sudoku(filename):
             plt.imsave(
                 dirname + str(i) + ".png", cropped_number, format="png", cmap="gray"
             )
+
+    # uncomment this to view the binary grid with red and green overlays for if a digit is present or not
 
     # plotBoundingBoxes(
     #     sudoku_grid_boxes,
@@ -357,6 +353,8 @@ def extract_sudoku(filename):
 
 
 # format the cells as if they were MNIST digits
+# make them 28x28
+# threshold them to get better results
 def format_cells(cropped_cells):
     output = []
     # loop through each cell
@@ -367,18 +365,12 @@ def format_cells(cropped_cells):
         cell_resized = cell_resized >= threshold_value
 
         # add to the output
-        output.append((i,  cell_resized))
+        output.append((i, cell_resized))
 
     return output
 
 
 def convert_to_dataloader(imageList):
-    # create a dataset
-    # dataset = TensorDataset(torch.from_numpy(np.array(imageList)))
-
-    # dataset = transforms.ToTensor()(np.reshape(imageList, (-1, 28, 28, 1)).astype(np.float32))
-    # print(dataset[0])
-
     # create the dataloader, with no shuffling since order matters
     dataloader = torch.utils.data.DataLoader(imageList, shuffle=False, batch_size=1)
 
@@ -386,6 +378,7 @@ def convert_to_dataloader(imageList):
 
 
 # predict the digits from images
+# use the pretrained model
 def predict_digits(dataloader):
     use_cuda = torch.cuda.is_available()
     device = torch.device("cuda" if use_cuda else "cpu")
@@ -401,12 +394,6 @@ def predict_digits(dataloader):
         )
     )
 
-    # model1.load_state_dict(
-    #     torch.load(
-    #         "saved_model.pb",
-    #         map_location=torch.device("cpu"),
-    #     )
-    # )
     # do the prediction
     model1.eval()
 
@@ -419,64 +406,74 @@ def predict_digits(dataloader):
 
             # run the input through the model
             output = model1(data)
+
             # determine the model's prediction
-            # pred = output.argmax(dim=1, keepdim=True)
-            pred = torch.topk(output,2, dim=1 ).indices
-            
+            pred = torch.topk(output, 2, dim=1).indices
             predictions.append(pred.detach().cpu().numpy().flatten())
-            # predictions.append(pred)
-            # return
+
     return predictions
 
-def printSudoku(digits, num_exists):
-  digit_idx = 0
-  for i in range(9):
-    for j in range(9):
-      
-      lin_idx = j + i * 9
-      
-      if num_exists[lin_idx]:
-        
-        if digits[digit_idx][0] == 0:
-          print(digits[digit_idx][1], end=" ")    
-        else:
-          print(digits[digit_idx][0], end=" ")    
-          
-        digit_idx+=1    
-      else:
-        print("_", end=" ")
-    print()
-      
 
-  
-      
+# print the text-based sudoku grid
+def printSudoku(digits, num_exists):
+    digit_idx = 0
+
+    # loop through each box
+    for i in range(9):
+        for j in range(9):
+
+            # compute the linearised index of the box
+            lin_idx = j + i * 9
+
+            # if a digit exists in this box, print the number, otherwise print _
+            if num_exists[lin_idx]:
+                # use digit_idx to keep track of the digit to print
+                # (since the array only stores the boxes with digits, not the boxes without)
+                if digits[digit_idx][0] == 0:
+                    print(digits[digit_idx][1], end=" ")
+                else:
+                    print(digits[digit_idx][0], end=" ")
+
+                digit_idx += 1
+            else:
+                print("_", end=" ")
+        print()
+
 
 if __name__ == "__main__":
     # read in an image filename
-    # filename = input("Please enter the absolute path of the image to process: ").strip()
-    for num in range(1080, 1089):
-        filename = "./v2_test/image" + str(num) + ".jpg"
-        print("Current file: " + filename)
+    filename = input("Please enter the absolute path of the image to process: ").strip()
 
-        # get the cropped cells with digits in them
-        cropped_cells, num_exists = extract_sudoku(filename)
+    # get the cropped cells with digits in them
+    # this function will also save the digit images
+    cropped_cells, num_exists = extract_sudoku(filename)
 
-        # need to format the cells into the correct shapes
-        cropped_cells = format_cells(cropped_cells)
+    # need to format the cells into the correct shapes
+    cropped_cells = format_cells(cropped_cells)
 
-        test_dataset = MnistDataset(training=False, transform=None)
-        test_loader = torch.utils.data.DataLoader(
-            test_dataset, batch_size=100, shuffle=False
-        )
-        # get the images
-        images = [transforms.ToTensor()((1 - np.array(pair[1])).astype(np.float32)) for pair in cropped_cells]
+    # prepare the model
+    test_dataset = MnistDataset(training=False, transform=None)
+    test_loader = torch.utils.data.DataLoader(
+        test_dataset, batch_size=100, shuffle=False
+    )
 
-        # create a dataloader
-        dataloader = convert_to_dataloader(images)
+    # get the images
+    images = [
+        transforms.ToTensor()((1 - np.array(pair[1])).astype(np.float32))
+        for pair in cropped_cells
+    ]
 
-        # use the trained MNIST model to predict the digits
-        results = predict_digits(dataloader)
-        printSudoku(results, num_exists)
-        
+    # create a dataloader
+    dataloader = convert_to_dataloader(images)
 
-        exit()
+    # use the trained MNIST model to predict the digits
+    results = predict_digits(dataloader)
+
+    # print the text-based sudoku puzzle
+    printSudoku(results, num_exists)
+
+    print()
+    print(
+        "The cropped boxes (with digits in them) can be found here:",
+        filename[: filename.rfind(".")] + "_output/",
+    )
