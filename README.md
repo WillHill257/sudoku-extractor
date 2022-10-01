@@ -1,6 +1,8 @@
 # Sudoku Extractor
 
-#### William Hill (2115261) and Ireton Liu (2089889)
+## Description
+
+Computing the solution to a Sudoku puzzle algorithmically when given the numbers and their corresponding coordinates in the grid is a trivial task. However, in many practical cases, these Sudoku puzzles are often presented in printed media. In these cases, in order to solve them using a computer, it is vital to be able to extract necessary information from these media through the means of photographs. This project presents a method of extracting the grid data from certain types of noisy and blurry photographs of Sudoku Grids through the use of different non-learning image processing techniques.
 
 ## Structure
 
